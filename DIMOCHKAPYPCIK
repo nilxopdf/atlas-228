@@ -1,0 +1,426 @@
+import telebot
+import random
+import datetime
+import logging
+import string
+import requests
+import time
+from telebot import types
+
+# ========== НАСТРОЙКИ ==========
+BOT_TOKEN = "7920326260:AAGIxuxELj57jpZadjzQdUmZtF88NdC-isg"
+
+# ========== СПИСКИ ==========
+SNOS = ["1", "2"]
+SWAT = ["1", "2"]
+OPERATOR = ["905", "903", "900", "951", "904"]
+
+DEF_DAR_GERVV = ["Дмитрий", "Димон", "Dar_gervv"]
+DEF_FEARNEAL = ["Ангелина", "Лина", "fearneal"]
+DEF_PAZMET = ["Павел", "Паша", "paZmet"]
+DEF_NI4OO = ["Олег", "Олежа", "Ni4oo"]
+
+# Кэш для найденных ID (чтобы не повторяться)
+found_ids_cache = set()
+
+# ========== ИНИЦИАЛИЗАЦИЯ ==========
+bot = telebot.TeleBot(BOT_TOKEN)
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+
+# ========== ФУНКЦИИ ==========
+def log_command(user_id, username, command):
+    timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    log_message = f"{timestamp} | ID: {user_id} | User: @{username} | Command: {command}"
+    logging.info(log_message)
+    with open("bot_log.txt", "a", encoding="utf-8") as f:
+        f.write(log_message + "\n")
+
+def safe_reply(message, text, parse_mode=None):
+    try:
+        bot.reply_to(message, text, parse_mode=parse_mode)
+    except Exception as e:
+        logging.error(f"Ошибка отправки: {e}")
+        try:
+            bot.send_message(message.chat.id, text, parse_mode=parse_mode)
+        except:
+            pass
+
+def generate_random_telegram_id():
+    """Генерирует РАЗНЫЙ рандомный Telegram ID каждый раз"""
+    prefixes = [1, 2, 3, 4, 5, 6, 7, 8, 9]
+    prefix = random.choice(prefixes)
+    # Разная длина каждый раз
+    rest_length = random.randint(6, 10)
+    rest = ''.join(random.choices('0123456789', k=rest_length))
+    return int(f"{prefix}{rest}")
+
+def generate_random_username():
+    """Генерирует рандомный username для проверки"""
+    prefixes = ["user", "telegram", "account", "profile", "chat", "id", "tg", "bot"]
+    suffixes = ["123", "456", "789", "000", "777", "999", "random", "test"]
+    
+    username = random.choice(prefixes) + str(random.randint(100, 9999))
+    if random.choice([True, False]):
+        username += random.choice(suffixes)
+    
+    return username
+
+def check_user_exists_via_api(user_id):
+    """Проверка существования пользователя через API"""
+    try:
+        url = f"https://api.telegram.org/bot{BOT_TOKEN}/getChat"
+        params = {"chat_id": user_id}
+        
+        response = requests.get(url, params=params, timeout=5)
+        data = response.json()
+        
+        if data.get("ok"):
+            chat_info = data.get("result", {})
+            return {
+                "exists": True,
+                "id": chat_info.get("id"),
+                "first_name": chat_info.get("first_name", "Неизвестно"),
+                "last_name": chat_info.get("last_name", ""),
+                "username": chat_info.get("username", "Нет username"),
+                "type": chat_info.get("type", "private")
+            }
+        return {"exists": False}
+            
+    except Exception:
+        return {"exists": False}
+
+def find_random_real_user():
+    """Поиск РАЗНОГО реального пользователя каждый раз"""
+    # Разные стратегии поиска
+    strategies = [
+        "random_id",      # Рандомные ID
+        "sequential_id",  # ID из определенного диапазона
+        "username"        # Поиск по username
+    ]
+    
+    strategy = random.choice(strategies)
+    max_attempts = 40
+    
+    for attempt in range(max_attempts):
+        if strategy == "random_id":
+            # Полностью рандомный ID
+            test_id = generate_random_telegram_id()
+            result = check_user_exists_via_api(test_id)
+            
+            if result["exists"] and test_id not in found_ids_cache:
+                found_ids_cache.add(test_id)
+                # Очищаем кэш если слишком большой
+                if len(found_ids_cache) > 100:
+                    found_ids_cache.clear()
+                return {"id": test_id, "info": result, "method": "random_id"}
+        
+        elif strategy == "username":
+            # Поиск по username
+            test_username = generate_random_username()
+            try:
+                url = f"https://api.telegram.org/bot{BOT_TOKEN}/getChat"
+                params = {"chat_id": f"@{test_username}"}
+                response = requests.get(url, params=params, timeout=5)
+                data = response.json()
+                
+                if data.get("ok") and data.get("result"):
+                    chat_info = data["result"]
+                    user_id = chat_info.get("id")
+                    
+                    if user_id and user_id not in found_ids_cache:
+                        found_ids_cache.add(user_id)
+                        if len(found_ids_cache) > 100:
+                            found_ids_cache.clear()
+                        return {
+                            "id": user_id,
+                            "info": {
+                                "exists": True,
+                                "id": user_id,
+                                "first_name": chat_info.get("first_name", "Неизвестно"),
+                                "last_name": chat_info.get("last_name", ""),
+                                "username": test_username,
+                                "type": chat_info.get("type", "private")
+                            },
+                            "method": "username"
+                        }
+            except:
+                pass
+        
+        # Небольшая задержка чтобы не флудить
+        time.sleep(0.05)
+    
+    # Если не нашли - пробуем другой метод
+    if strategy != "random_id":
+        return find_random_real_user()
+    
+    return None
+
+# ========== КОМАНДА PIDOR С РАЗНЫМИ ID ==========
+@bot.message_handler(commands=['pidor'])
+def send_pidor(message):
+    """Находит РАЗНЫХ реальных пользователей каждый раз"""
+    user = message.from_user
+    log_command(user.id, user.username, '/pidor')
+    
+    status_msg = bot.reply_to(message, "🔍 Ищу РАЗНОГО реального пользователя Telegram... (20-30 секунд)")
+    
+    try:
+        result = find_random_real_user()
+        
+        if result:
+            info = result["info"]
+            method_text = {
+                "random_id": "🎲 случайный ID",
+                "username": "📝 случайный username"
+            }.get(result.get("method"), "🔍 API")
+            
+            response = f"""🎲 **НАЙДЕН РАЗНЫЙ ПОЛЬЗОВАТЕЛЬ!** 🎲
+
+✅ **Профиль существует в Telegram!**
+🔍 **Найден через:** {method_text}
+📌 **ID:** `{result['id']}`
+👤 **Имя:** {info.get('first_name', '?')} {info.get('last_name', '')}
+🔤 **Username:** @{info.get('username', 'нет')}
+
+🔗 **Ссылка:** tg://user?id={result['id']}
+
+💡 *Каждый запрос находит РАЗНЫХ пользователей!*"""
+            
+            # Добавляем кнопку для проверки
+            markup = types.InlineKeyboardMarkup()
+            markup.add(types.InlineKeyboardButton("🔍 Открыть профиль", url=f"tg://user?id={result['id']}"))
+            markup.add(types.InlineKeyboardButton("🎲 Найти другого", callback_data="find_another"))
+            
+            bot.edit_message_text(
+                response, 
+                status_msg.chat.id, 
+                status_msg.message_id, 
+                parse_mode='Markdown',
+                reply_markup=markup
+            )
+        else:
+            response = "❌ Не удалось найти пользователя. Попробуй еще раз!"
+            bot.edit_message_text(response, status_msg.chat.id, status_msg.message_id)
+        
+    except Exception as e:
+        logging.error(f"Ошибка в /pidor: {e}")
+        bot.edit_message_text(f"❌ Ошибка: {str(e)[:100]}", status_msg.chat.id, status_msg.message_id)
+
+# ========== КОМАНДА ДЛЯ ПОИСКА ДРУГОГО ПОЛЬЗОВАТЕЛЯ ==========
+@bot.callback_query_handler(func=lambda call: call.data == "find_another")
+def find_another_user(call):
+    """Находит другого пользователя"""
+    bot.answer_callback_query(call.id, "🔍 Ищу другого пользователя...")
+    
+    # Отправляем новое сообщение с поиском
+    status_msg = bot.send_message(call.message.chat.id, "🔍 Ищу ДРУГОГО пользователя...")
+    
+    try:
+        result = find_random_real_user()
+        
+        if result:
+            info = result["info"]
+            response = f"""🎲 **НАЙДЕН ДРУГОЙ ПОЛЬЗОВАТЕЛЬ!** 🎲
+
+✅ **Профиль существует!**
+📌 **ID:** `{result['id']}`
+👤 **Имя:** {info.get('first_name', '?')} {info.get('last_name', '')}
+🔤 **Username:** @{info.get('username', 'нет')}
+
+🔗 **Ссылка:** tg://user?id={result['id']}"""
+            
+            markup = types.InlineKeyboardMarkup()
+            markup.add(types.InlineKeyboardButton("🔍 Открыть профиль", url=f"tg://user?id={result['id']}"))
+            markup.add(types.InlineKeyboardButton("🎲 Найти другого", callback_data="find_another"))
+            
+            bot.edit_message_text(
+                response, 
+                status_msg.chat.id, 
+                status_msg.message_id, 
+                parse_mode='Markdown',
+                reply_markup=markup
+            )
+        else:
+            bot.edit_message_text("❌ Не удалось найти. Попробуй /pidor снова", status_msg.chat.id, status_msg.message_id)
+            
+    except Exception as e:
+        bot.edit_message_text(f"❌ Ошибка: {str(e)[:100]}", status_msg.chat.id, status_msg.message_id)
+
+@bot.message_handler(commands=['checkid'])
+def check_by_id(message):
+    """Проверка конкретного ID"""
+    user = message.from_user
+    log_command(user.id, user.username, '/checkid')
+    
+    parts = message.text.split()
+    if len(parts) < 2:
+        safe_reply(message, "❌ Использование: /checkid 123456789")
+        return
+    
+    user_id = parts[1]
+    status_msg = bot.reply_to(message, f"🔍 Проверяю ID: {user_id}...")
+    
+    try:
+        result = check_user_exists_via_api(user_id)
+        
+        if result["exists"]:
+            response = f"""✅ **ПОЛЬЗОВАТЕЛЬ СУЩЕСТВУЕТ!**
+
+📌 **ID:** `{result['id']}`
+👤 **Имя:** {result['first_name']}
+🔤 **Username:** @{result['username']}
+
+🔗 **Ссылка:** tg://user?id={user_id}"""
+        else:
+            response = f"❌ **ПОЛЬЗОВАТЕЛЬ НЕ НАЙДЕН!**\n\nID: `{user_id}`"
+        
+        bot.edit_message_text(response, status_msg.chat.id, status_msg.message_id, parse_mode='Markdown')
+        
+    except Exception as e:
+        bot.edit_message_text(f"❌ Ошибка: {str(e)[:100]}", status_msg.chat.id, status_msg.message_id)
+
+# ========== ОСТАЛЬНЫЕ КОМАНДЫ (ТВОИ, БЕЗ ИЗМЕНЕНИЙ) ==========
+@bot.message_handler(commands=['start'])
+def send_welcome(message):
+    user = message.from_user
+    log_command(user.id, user.username, '/start')
+    
+    welcome_text = """пошел нахуй сын шлюхи
+
+Devs: @Dar_gervv, @fearneal, @paZmet
+    
+😎 Веселись, но знай меру!"""
+    safe_reply(message, welcome_text)
+
+@bot.message_handler(commands=['help'])
+def send_help(message):
+    user = message.from_user
+    log_command(user.id, user.username, '/help')
+    
+    help_text = """
+📋 ВСЕ КОМАНДЫ:
+
+🔞 Основные команды:
+/def - твой деф
+/dammage - урон
+/bypass - байпасс ключа
+/number - генератор номеров
+/snos - снос
+/swat - сват
+/pidor - НАХОДИТ РАЗНЫХ реальных пользователей Telegram!
+/checkid *123* - проверить конкретный ID
+
+🛠 Вспомогательные:
+/start - начать
+/menu - открыть меню
+/help - помощь
+
+⚠️ Каждый запрос /pidor находит РАЗНЫХ пользователей!"""
+    safe_reply(message, help_text)
+
+@bot.message_handler(commands=['def'])
+def send_def(message):
+    user = message.from_user
+    log_command(user.id, user.username, '/def')
+    
+    if user.username == "Dar_gervv":
+        response = f"Я ДЕФ {random.choice(DEF_DAR_GERVV)} НЕ ТРОГАЙ ЕГО"
+    elif user.username == "fearneal":
+        response = f"Я ДЕФ {random.choice(DEF_FEARNEAL)} НЕ ТРОГАЙ ЕЁ"
+    elif user.username == "paZmet":
+        response = f"Я ДЕФ {random.choice(DEF_PAZMET)} НЕ ТРОГАЙ ЕГО"
+    elif user.username == "Ollezha1989":
+        response = "ОЛЕЖА ДЕФ❤️🛡 ГО СЕКСЫ"
+    else:
+        response = "ИДИ НАХУЙ!!! ТЕБЯ НЕ ДЕФ"
+    safe_reply(message, response)
+
+@bot.message_handler(commands=['bypass'])
+def send_bypass(message):
+    user = message.from_user
+    log_command(user.id, user.username, '/bypass')
+    
+    target = ''.join(random.choices('0123456789abcdef', k=32))
+    zalupa = f"FREE_{target}"
+
+    if user.username == "Dar_gervv":
+        response = f"🔑 ВАШ КЛЮЧ: {zalupa}"
+    else:
+        response = zalupa
+    safe_reply(message, response)
+
+@bot.message_handler(commands=['dammage'])
+def send_dammage(message):
+    user = message.from_user
+    log_command(user.id, user.username, '/dammage')
+    
+    if user.username == "Dar_gervv":
+        response = "🗡 ДМИТРИЙ ДАЕТ УРОН 🩸"
+    else:
+        response = "кошка плохо выспалась"
+    safe_reply(message, response)
+
+@bot.message_handler(commands=['number'])      
+def send_number(message):
+    log_command(message.from_user.id, message.from_user.username, '/number')
+    nomer = random.choice(OPERATOR)
+    hah = ''.join(random.choices('0123456789', k=7))
+    safe_reply(message, f"📱 НОМЕР: +7{nomer}{hah}")
+
+@bot.message_handler(commands=['snos'])      
+def send_snos(message):
+    user = message.from_user
+    log_command(user.id, user.username, '/snos')
+    response = f"СНОС ТЕБЯ ОТ @{user.username}" if random.choice([True, False]) else "СНОС СНОС СНОС"
+    safe_reply(message, response)
+
+@bot.message_handler(commands=['swat'])      
+def send_swat(message):
+    log_command(message.from_user.id, message.from_user.username, '/swat')
+    response = random.choice([
+        "здравствуйте, школа заминирована",
+        "вам звонят из полиции, школа номер 17 заминирована"
+    ])
+    safe_reply(message, response)
+
+@bot.message_handler(commands=['menu'])
+def show_menu(message):
+    log_command(message.from_user.id, message.from_user.username, '/menu')
+    markup = types.InlineKeyboardMarkup(row_width=2)
+    markup.add(
+        types.InlineKeyboardButton("🔐 Байпасс", callback_data='bypass'),
+        types.InlineKeyboardButton("🎲 Пидор", callback_data='pidor'),
+        types.InlineKeyboardButton("📱 Номер", callback_data='number'),
+        types.InlineKeyboardButton("🔍 Проверить ID", callback_data='checkid')
+    )
+    bot.send_message(message.chat.id, "🎮 МЕНЮ:", reply_markup=markup)
+
+@bot.callback_query_handler(func=lambda call: True)
+def handle_callback(call):
+    if call.data == 'bypass':
+        target = ''.join(random.choices('0123456789abcdef', k=16))
+        bot.answer_callback_query(call.id, f"Ключ: FREE_{target}", show_alert=True)
+    elif call.data == 'pidor':
+        bot.answer_callback_query(call.id, "🎲 Используй /pidor для поиска!", show_alert=True)
+    elif call.data == 'number':
+        nomer = random.choice(OPERATOR)
+        hah = ''.join(random.choices('0123456789', k=7))
+        bot.answer_callback_query(call.id, f"Номер: +7{nomer}{hah}", show_alert=True)
+    elif call.data == 'checkid':
+        bot.answer_callback_query(call.id, "🔍 Используй: /checkid 123456789", show_alert=True)
+
+# ========== ЗАПУСК ==========
+if __name__ == "__main__":
+    print("=" * 50)
+    print("🤖 БОТ ЗАПУЩЕН")
+    print(f"⏰ Время: {datetime.datetime.now()}")
+    print("=" * 50)
+    print("✅ РАЗНЫЕ пользователи при каждом запросе!")
+    print("🎲 /pidor - находит РАЗНЫХ реальных пользователей")
+    print("🔄 Кэш ID: чтобы не повторялись одни и те же")
+    print("=" * 50)
+    
+    try:
+        bot.infinity_polling()
+    except KeyboardInterrupt:
+        print("\n👋 Бот остановлен")
